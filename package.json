@@ -1,0 +1,16 @@
+{
+  "name": "prototipo3-futebol-telegram",
+  "version": "1.0.0",
+  "description": "Protótipo 3 - salas privadas + bot do Telegram convidando via Mini App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node bot.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "node-telegram-bot-api": "^0.66.0",
+    "dotenv": "^16.4.5"
+  }
+}

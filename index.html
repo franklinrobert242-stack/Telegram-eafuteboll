@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Protótipo 2 — Futebol Multiplayer</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: #111; color: #eee;
+    font-family: -apple-system, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #ui { padding: 10px; text-align: center; max-width: 800px; }
+  #ui h1 { font-size: 18px; margin: 8px 0; }
+  #ui p { font-size: 13px; color: #aaa; margin: 4px 0; }
+  #status { font-size: 14px; margin-top: 6px; }
+  #game-container { line-height: 0; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>⚽ Protótipo 2 — Multiplayer pela Internet</h1>
+  <p>Setas / WASD para mover • ESPAÇO perto da bola para chutar</p>
+  <div id="status">Conectando...</div>
+</div>
+<div id="game-container"></div>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+/* =====================================================================
+   O cliente agora é "burro" de propósito:
+   - NÃO decide se o jogador se moveu, NÃO decide se houve gol.
+   - Só faz duas coisas: (1) manda o teclado pro servidor 10x/seg,
+     e (2) desenha o último estado que o servidor mandou.
+   - Isso é o oposto do Protótipo 1, onde o navegador simulava tudo.
+   ===================================================================== */
+
+const FIELD_W = 800;
+const FIELD_H = 500;
+const GOAL_TOP = 190;
+const GOAL_BOTTOM = 310;
+
+/* Lê o código da sala vindo da URL que o bot do Telegram montou,
+   ex: https://seu-app.onrender.com/?room=AB12CD
+   Se o Mini App foi aberto de dentro do Telegram, o WebApp também
+   expõe os mesmos parâmetros via Telegram.WebApp.initDataUnsafe,
+   mas usar a query string direta é mais simples e funciona igual
+   testando fora do Telegram, no navegador comum. */
+function getRoomCode() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('room') || 'LOBBY';
+}
+
+// Se estiver rodando dentro do Telegram, isso ajusta o Mini App
+// (tela cheia, cor de fundo, botão de fechar) — não afeta nada se
+// estiver aberto num navegador comum.
+if (window.Telegram && window.Telegram.WebApp) {
+  window.Telegram.WebApp.ready();
+  window.Telegram.WebApp.expand();
+}
+
+const socket = io({ query: { room: getRoomCode() } });
+
+let myTeam = null;
+let latestState = null;
+let cursors, wasd, spaceKey;
+let sprites = {}; // id -> phaser image
+let ballSprite;
+let scoreText, waitingText;
+
+const statusEl = document.getElementById('status');
+
+socket.on('assigned', ({ team, room }) => {
+  myTeam = team;
+  statusEl.textContent = `Sala ${room} — Você é o time ${team === 'blue' ? 'AZUL' : 'VERMELHO'}`;
+});
+
+socket.on('full', () => {
+  statusEl.textContent = 'Partida cheia (2/2). Tente novamente mais tarde.';
+});
+
+socket.on('state', (state) => {
+  latestState = state;
+});
+
+const config = {
+  type: Phaser.AUTO,
+  width: FIELD_W,
+  height: FIELD_H,
+  parent: 'game-container',
+  backgroundColor: '#2e7d32',
+  scene: { preload, create, update }
+};
+
+new Phaser.Game(config);
+
+function preload() {}
+
+function create() {
+  drawField(this);
+
+  cursors = this.input.keyboard.createCursorKeys();
+  wasd = this.input.keyboard.addKeys('W,A,S,D');
+  spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
+  ballSprite = this.add.image(FIELD_W / 2, FIELD_H / 2, 'disc-white');
+  ballSprite.setDisplaySize(14, 14);
+  makeTexture(this, 'disc-white', 0xffffff);
+  makeTexture(this, 'disc-blue', 0x1e88e5);
+  makeTexture(this, 'disc-red', 0xe53935);
+  ballSprite.setTexture('disc-white');
+
+  scoreText = this.add.text(FIELD_W / 2, 16, '0  —  0', {
+    fontSize: '28px', fontFamily: 'Arial', color: '#ffffff'
+  }).setOrigin(0.5, 0);
+
+  waitingText = this.add.text(FIELD_W / 2, FIELD_H / 2 - 40, 'Aguardando oponente entrar...', {
+    fontSize: '18px', fontFamily: 'Arial', color: '#ffee58'
+  }).setOrigin(0.5, 0.5).setVisible(false);
+
+  // manda o input pro servidor 10x/segundo (não precisa ser a cada frame)
+  this.time.addEvent({
+    delay: 100,
+    loop: true,
+    callback: sendInput
+  });
+}
+
+function makeTexture(scene, key, color) {
+  if (scene.textures.exists(key)) return;
+  const g = scene.add.graphics();
+  g.fillStyle(color, 1);
+  g.fillCircle(12, 12, 12);
+  g.generateTexture(key, 24, 24);
+  g.destroy();
+}
+
+function sendInput() {
+  socket.emit('input', {
+    left: cursors.left.isDown || wasd.A.isDown,
+    right: cursors.right.isDown || wasd.D.isDown,
+    up: cursors.up.isDown || wasd.W.isDown,
+    down: cursors.down.isDown || wasd.S.isDown,
+    kick: spaceKey.isDown
+  });
+}
+
+function drawField(scene) {
+  const g = scene.add.graphics();
+  g.lineStyle(3, 0xffffff, 0.9);
+  g.strokeRect(10, 10, FIELD_W - 20, FIELD_H - 20);
+  g.lineBetween(FIELD_W / 2, 10, FIELD_W / 2, FIELD_H - 10);
+  g.strokeCircle(FIELD_W / 2, FIELD_H / 2, 60);
+  g.strokeRect(10, 130, 90, 240);
+  g.strokeRect(FIELD_W - 100, 130, 90, 240);
+
+  g.fillStyle(0xffee58, 0.15);
+  g.fillRect(0, GOAL_TOP, 10, GOAL_BOTTOM - GOAL_TOP);
+  g.fillRect(FIELD_W - 10, GOAL_TOP, 10, GOAL_BOTTOM - GOAL_TOP);
+  g.lineStyle(3, 0xffee58, 0.9);
+  g.strokeRect(0, GOAL_TOP, 10, GOAL_BOTTOM - GOAL_TOP);
+  g.strokeRect(FIELD_W - 10, GOAL_TOP, 10, GOAL_BOTTOM - GOAL_TOP);
+}
+
+function update() {
+  if (!latestState) return;
+
+  // remove sprites de jogadores que saíram
+  const ids = latestState.players.map((p) => p.id);
+  for (const id in sprites) {
+    if (!ids.includes(id)) { sprites[id].destroy(); delete sprites[id]; }
+  }
+
+  for (const p of latestState.players) {
+    if (!sprites[p.id]) {
+      sprites[p.id] = this.add.image(p.x, p.y, p.team === 'blue' ? 'disc-blue' : 'disc-red');
+      sprites[p.id].setDisplaySize(24, 24);
+    }
+    // interpolação simples pra suavizar entre snapshots do servidor
+    const s = sprites[p.id];
+    s.x = Phaser.Math.Linear(s.x, p.x, 0.35);
+    s.y = Phaser.Math.Linear(s.y, p.y, 0.35);
+  }
+
+  ballSprite.x = Phaser.Math.Linear(ballSprite.x, latestState.ball.x, 0.35);
+  ballSprite.y = Phaser.Math.Linear(ballSprite.y, latestState.ball.y, 0.35);
+
+  scoreText.setText(`${latestState.score.blue}  —  ${latestState.score.red}`);
+  waitingText.setVisible(!!latestState.waiting);
+}
+</script>
+</body>
+</html>
